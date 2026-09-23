@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+env:
+  FLUTTER_CHANNEL: stable
+  DART_PACKAGE_NAME: cnc_jarvis
+  ORG_NAME: com.cncjarvis
+
 jobs:
   flutter:
     name: Flutter Analyze and Tests
@@ -23,25 +28,56 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: ${{ env.FLUTTER_CHANNEL }}
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
+      - name: Verify Flutter project
+        shell: bash
+        run: |
+          set -e
 
-      - name: Flutter pub get
+          if [ ! -f "pubspec.yaml" ]; then
+            echo "ERROR: pubspec.yaml was not found."
+            echo "Repository root is:"
+            pwd
+            echo "Files:"
+            find . -maxdepth 2 -type f | sort
+            exit 1
+          fi
+
+          echo "Flutter project found."
+
+      - name: Generate Android and Windows platform files
+        shell: bash
+        run: |
+          set -e
+
+          flutter create \
+            --platforms=android,windows \
+            --org "$ORG_NAME" \
+            --project-name "$DART_PACKAGE_NAME" \
+            .
+
+          echo "Generated platform directories:"
+          ls -la
+
+          test -d android
+          test -d windows
+
+          echo "Android and Windows projects generated successfully."
+
+      - name: Flutter Pub Get
         run: flutter pub get
 
-      - name: Flutter analyze
+      - name: Flutter Analyze
         run: flutter analyze
 
-      - name: Flutter tests
+      - name: Flutter Tests
         run: flutter test
 
   android:
-    name: Android APK
+    name: Android Release APK
     runs-on: ubuntu-latest
-    needs: flutter
 
     steps:
       - name: Checkout
@@ -50,28 +86,61 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: ${{ env.FLUTTER_CHANNEL }}
           cache: true
 
-      - name: Verify Android project
+      - name: Verify Flutter project
         shell: bash
         run: |
-          if [ ! -d "android" ]; then
-            echo "Android project is missing."
+          set -e
+
+          if [ ! -f "pubspec.yaml" ]; then
+            echo "ERROR: pubspec.yaml not found."
             exit 1
           fi
 
-      - name: Flutter pub get
+      - name: Generate Android platform
+        shell: bash
+        run: |
+          set -e
+
+          flutter create \
+            --platforms=android \
+            --org "$ORG_NAME" \
+            --project-name "$DART_PACKAGE_NAME" \
+            .
+
+          if [ ! -d "android" ]; then
+            echo "ERROR: Android project generation failed."
+            exit 1
+          fi
+
+      - name: Flutter Pub Get
         run: flutter pub get
 
-      - name: Flutter analyze
+      - name: Flutter Analyze
         run: flutter analyze
 
-      - name: Flutter tests
+      - name: Flutter Tests
         run: flutter test
 
       - name: Build Android APK
         run: flutter build apk --release
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not created."
+            find build -type f | sort || true
+            exit 1
+          fi
+
+          ls -lh "$APK"
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -81,9 +150,8 @@ jobs:
           if-no-files-found: error
 
   windows:
-    name: Windows CAD + Release
+    name: Windows Release
     runs-on: windows-latest
-    needs: flutter
 
     steps:
       - name: Checkout
@@ -92,148 +160,223 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: ${{ env.FLUTTER_CHANNEL }}
           cache: true
 
-      - name: Verify Windows project
+      - name: Verify Flutter project
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path "pubspec.yaml")) {
+            throw "pubspec.yaml was not found."
+          }
+
+          Write-Host "Flutter project found."
+
+      - name: Generate Windows platform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          flutter create `
+            --platforms=windows `
+            --org "$env:ORG_NAME" `
+            --project-name "$env:DART_PACKAGE_NAME" `
+            .
+
           if (-not (Test-Path "windows")) {
-            throw "Windows Flutter project is missing."
+            throw "Windows Flutter project generation failed."
           }
 
-      - name: Verify vcpkg
-        shell: pwsh
-        run: |
-          if (-not $env:VCPKG_INSTALLATION_ROOT) {
-            throw "VCPKG_INSTALLATION_ROOT is not available on the runner."
-          }
+          Write-Host "Windows project generated successfully."
 
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" version
+      - name: Flutter Pub Get
+        run: flutter pub get
+
+      - name: Flutter Analyze
+        run: flutter analyze
+
+      - name: Flutter Tests
+        run: flutter test
 
       - name: Install OpenCASCADE with vcpkg
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
+          $ErrorActionPreference = "Stop"
+
+          $vcpkg = Join-Path `
+            $env:VCPKG_INSTALLATION_ROOT `
+            "vcpkg.exe"
+
+          if (-not (Test-Path $vcpkg)) {
+            throw "vcpkg.exe was not found."
+          }
+
+          & $vcpkg install `
             --triplet=x64-windows `
             --x-manifest-root="$env:GITHUB_WORKSPACE\native\cad"
 
       - name: Locate OpenCASCADE
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $occtRoot = Join-Path `
             $env:GITHUB_WORKSPACE `
             "native\cad\vcpkg_installed\x64-windows"
-
-          $config = Join-Path `
-            $occtRoot `
-            "share\opencascade\OpenCASCADEConfig.cmake"
 
           $header = Join-Path `
             $occtRoot `
             "include\opencascade\Standard.hxx"
 
-          if (-not (Test-Path $config)) {
-            throw "OpenCASCADEConfig.cmake was not found at $config"
-          }
+          $lib = Join-Path `
+            $occtRoot `
+            "lib"
+
+          $bin = Join-Path `
+            $occtRoot `
+            "bin"
+
+          Write-Host "OCCT root:"
+          Write-Host $occtRoot
 
           if (-not (Test-Path $header)) {
             throw "OpenCASCADE Standard.hxx was not found at $header"
           }
 
-          "OCCT_ROOT=$occtRoot" >> $env:GITHUB_ENV
-          "OpenCASCADE_DIR=$(Split-Path $config -Parent)" >> $env:GITHUB_ENV
+          if (-not (Test-Path $lib)) {
+            throw "OpenCASCADE lib directory was not found."
+          }
 
-          Write-Host "OCCT_ROOT=$occtRoot"
-          Write-Host "OpenCASCADE_DIR=$(Split-Path $config -Parent)"
+          if (-not (Test-Path $bin)) {
+            throw "OpenCASCADE bin directory was not found."
+          }
 
-      - name: Flutter pub get
-        run: flutter pub get
+          "OCCT_ROOT=$occtRoot" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
-      - name: Flutter analyze
-        run: flutter analyze
-
-      - name: Configure native CAD
+      - name: Configure Native CAD
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           cmake `
-            -S native\cad `
-            -B native\cad\build `
+            -S native/cad `
+            -B native/cad/build `
             -A x64 `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             "-DVCPKG_TARGET_TRIPLET=x64-windows" `
-            "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE\native\cad" `
-            "-DOCCT_ROOT=$env:OCCT_ROOT" `
-            "-DOpenCASCADE_DIR=$env:OpenCASCADE_DIR"
+            "-DOCCT_ROOT=$env:OCCT_ROOT"
 
-      - name: Build native CAD
+      - name: Build Native CAD
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           cmake `
-            --build native\cad\build `
+            --build native/cad/build `
             --config Release `
             --parallel
 
-      - name: Native CAD tests
+      - name: Native CAD Tests
         shell: pwsh
         run: |
-          ctest `
-            --test-dir native\cad\build `
-            --build-config Release `
-            --output-on-failure
+          $ErrorActionPreference = "Stop"
 
-      - name: Flutter tests
-        run: flutter test
+          ctest `
+            --test-dir native/cad/build `
+            -C Release `
+            --output-on-failure
 
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Bundle native CAD DLL
+      - name: Verify Windows Build
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $release = "build\windows\x64\runner\Release"
 
           if (-not (Test-Path $release)) {
-            throw "Flutter Windows release directory was not found."
+            throw "Windows release directory was not created."
           }
 
-          $cadDll = "native\cad\build\Release\cnc_cad.dll"
+          $exe = Get-ChildItem `
+            $release `
+            -Filter "*.exe" `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if (-not $exe) {
+            throw "Windows executable was not found."
+          }
+
+          Write-Host "Windows executable:"
+          $exe | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+      - name: Bundle CNC CAD DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $release = `
+            "build\windows\x64\runner\Release"
+
+          $cadDll = `
+            "native\cad\build\Release\cnc_cad.dll"
 
           if (-not (Test-Path $cadDll)) {
             throw "cnc_cad.dll was not produced."
           }
 
-          Copy-Item $cadDll $release -Force
+          Copy-Item `
+            $cadDll `
+            $release `
+            -Force
 
-      - name: Bundle OpenCASCADE runtime DLLs
+      - name: Bundle OpenCASCADE DLLs
         shell: pwsh
         run: |
-          $release = "build\windows\x64\runner\Release"
-          $occtBin = Join-Path $env:OCCT_ROOT "bin"
+          $ErrorActionPreference = "Stop"
 
-          if (-not (Test-Path $occtBin)) {
-            throw "OpenCASCADE bin directory was not found: $occtBin"
-          }
+          $release = `
+            "build\windows\x64\runner\Release"
 
-          $dlls = Get-ChildItem `
-            -Path $occtBin `
-            -Filter "TK*.dll" `
-            -File
+          $occtBin = `
+            Join-Path $env:OCCT_ROOT "bin"
 
-          if ($dlls.Count -eq 0) {
-            throw "No OpenCASCADE TK*.dll files were found."
+          $dlls = `
+            Get-ChildItem `
+              $occtBin `
+              -Filter "*.dll" `
+              -File
+
+          if (-not $dlls) {
+            throw "No OpenCASCADE DLLs were found."
           }
 
           Copy-Item `
-            -Path $dlls.FullName `
-            -Destination $release `
+            $dlls.FullName `
+            $release `
             -Force
 
       - name: Create Windows ZIP
         shell: pwsh
         run: |
-          $release = "build\windows\x64\runner\Release"
-          $zip = "CNC-JARVIS-Windows-x64.zip"
+          $ErrorActionPreference = "Stop"
+
+          $release = `
+            "build\windows\x64\runner\Release"
+
+          $zip = `
+            "CNC-JARVIS-Windows-x64.zip"
 
           if (Test-Path $zip) {
             Remove-Item $zip -Force
@@ -244,9 +387,16 @@ jobs:
             -DestinationPath $zip `
             -CompressionLevel Optimal
 
-      - name: Upload Windows release
+          if (-not (Test-Path $zip)) {
+            throw "Windows ZIP was not created."
+          }
+
+          Get-Item $zip | Format-List FullName,Length
+
+      - name: Upload Windows Release
         uses: actions/upload-artifact@v4
         with:
           name: CNC-JARVIS-Windows-x64
           path: CNC-JARVIS-Windows-x64.zip
           if-no-files-found: error
+```
