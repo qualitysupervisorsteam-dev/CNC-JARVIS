@@ -1,0 +1,8 @@
+CNC-JARVIS IGES fixture: single line entity                             S      1
+1H,,1H;,7HMinimal,10Hminimal.,7HMinimal,5Higes5,5Higes5,32,38,6,308,15,1G      1
+.0,2,2HMM,1,0.01,15H20240101.000000,1E-06,10000.,7HUnknown,7HUnknown,11,G      2
+0,15HMinimal IGES;                                                      G      3
+110            1       0       0       0       0       0       000000001D      1
+110            0       0       1       0                LINE           0D      2
+110,0.,0.,0.,20.,20.,20.;                                               P      1
+S      1G      3D      2P      1T      1                                        

@@ -1,0 +1,10 @@
+services:
+  api:
+    build: ./server
+    ports:
+      - "8080:8080"
+    environment:
+      CORS_ORIGINS: "*"
+      MAX_UPLOAD_BYTES: "52428800"
+    volumes:
+      - ./server/data:/app/data
