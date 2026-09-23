@@ -1,0 +1,199 @@
+name: CNC-JARVIS CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flutter:
+    name: Flutter Analyze and Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android platform files
+        run: flutter create --platforms=android --org com.cncjarvis .
+
+      - name: Create Windows platform files
+        run: flutter create --platforms=windows --org com.cncjarvis .
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    needs: flutter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android platform files
+        run: flutter create --platforms=android --org com.cncjarvis .
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build Android APK
+        run: flutter build apk --release
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CNC-JARVIS-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  windows:
+    name: Windows CAD + Release
+    runs-on: windows-latest
+    needs: flutter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Windows platform files
+        shell: pwsh
+        run: flutter create --platforms=windows --org com.cncjarvis .
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Install OpenCASCADE from vcpkg manifest
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+          if (-not (Test-Path $vcpkg)) {
+            throw "vcpkg.exe was not found at $vcpkg"
+          }
+          & $vcpkg install --triplet=x64-windows --x-manifest-root="$env:GITHUB_WORKSPACE\native\cad"
+
+      - name: Locate OpenCASCADE
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "native\cad\vcpkg_installed\x64-windows"
+          $include = Join-Path $root "include\opencascade\Standard.hxx"
+          $lib = Join-Path $root "lib"
+          $bin = Join-Path $root "bin"
+
+          if (-not (Test-Path $include)) {
+            throw "OpenCASCADE Standard.hxx was not found at $include"
+          }
+          if (-not (Test-Path $lib)) {
+            throw "OpenCASCADE lib directory was not found at $lib"
+          }
+          if (-not (Test-Path $bin)) {
+            throw "OpenCASCADE bin directory was not found at $bin"
+          }
+
+          "OCCT_ROOT=$root" >> $env:GITHUB_ENV
+
+      - name: Configure native CAD
+        shell: pwsh
+        run: |
+          cmake `
+            -S native\cad `
+            -B native\cad\build `
+            -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            "-DVCPKG_TARGET_TRIPLET=x64-windows" `
+            "-DOCCT_ROOT=$env:OCCT_ROOT"
+
+      - name: Build native CAD
+        shell: pwsh
+        run: |
+          cmake --build native\cad\build --config Release --parallel
+
+      - name: Native CAD tests
+        shell: pwsh
+        run: |
+          ctest --test-dir native\cad\build -C Release --output-on-failure
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Flutter tests
+        run: flutter test
+
+      - name: Build Windows
+        run: flutter build windows --release
+
+      - name: Bundle native CAD DLL
+        shell: pwsh
+        run: |
+          $release = "build\windows\x64\runner\Release"
+          $cad = "native\cad\build\Release\cnc_cad.dll"
+
+          if (-not (Test-Path $release)) {
+            throw "Flutter Windows release directory was not found."
+          }
+          if (-not (Test-Path $cad)) {
+            throw "cnc_cad.dll was not produced."
+          }
+
+          Copy-Item $cad $release -Force
+
+      - name: Bundle OpenCASCADE runtime DLLs
+        shell: pwsh
+        run: |
+          $release = "build\windows\x64\runner\Release"
+          $bin = Join-Path $env:OCCT_ROOT "bin"
+          $dlls = Get-ChildItem $bin -Filter "*.dll" -File
+
+          if ($dlls.Count -eq 0) {
+            throw "No OpenCASCADE runtime DLLs were found in $bin"
+          }
+
+          Copy-Item $dlls.FullName $release -Force
+
+      - name: Create Windows ZIP
+        shell: pwsh
+        run: |
+          $release = "build\windows\x64\runner\Release"
+          $zip = "CNC-JARVIS-Windows-x64.zip"
+
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+
+          Compress-Archive -Path "$release\*" -DestinationPath $zip -CompressionLevel Optimal
+
+      - name: Upload Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: CNC-JARVIS-Windows-x64
+          path: CNC-JARVIS-Windows-x64.zip
+          if-no-files-found: error
